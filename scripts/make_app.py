@@ -151,10 +151,21 @@ def build_icns(dst_dir, png_base):
 
 LAUNCHER = r'''#!/bin/bash
 # 文件归档检索工具启动器
+# 首次双击：本进程原地变身为检索服务并打开浏览器；之后双击只负责打开页面。
 set -u
 ARCHIVE="${FILEARCHIVE_ROOT:-$HOME/Desktop/文件归档}"
+# 日志放在应用自己的目录：归档区里的旧日志文件由其他应用创建，本应用无权追加
+LOG_DIR="${FILEARCHIVE_LOG_DIR:-$HOME/Library/Logs/FileSearch}"
+LOG="$LOG_DIR/serve.log"
+
+# 启动排错日志：双击无反应时先看这里
+log() {
+  /bin/mkdir -p "$LOG_DIR" 2>/dev/null
+  /bin/echo "$(/bin/date '+%F %T') [launcher] $*" >> "$LOG" 2>/dev/null
+}
 
 fail() {
+  log "失败: $1"
   /usr/bin/osascript -e "display alert \"文件搜索\" message \"$1\" as critical" >/dev/null 2>&1
   exit 1
 }
@@ -195,25 +206,24 @@ PYEOF
 
 MODE=$(echo "$RES" | awk '{print $1}')
 PORT=$(echo "$RES" | awk '{print $2}')
+log "启动 pid=$$ 解释器=$PY 探测=$RES"
 
 if [ "$MODE" = "OPEN" ]; then
   /usr/bin/open "http://127.0.0.1:$PORT/"
   exit 0
 fi
+
+# ---- 单实例：本应用进程自己就是服务进程 ----
+# 早先的写法是 nohup 拉一个子进程再退出，但应用一退出，系统会连子进程所在的进程组一起回收，
+# 表现就是双击后弹「服务启动超时」、之后再也连不上。
+# 现在改成 exec：本进程原地变身为检索服务，应用活着服务就在，不会被连带回收。
+# 再次双击时上面的探测会发现服务已在，直接开浏览器并退出，不会起第二个实例。
 [ "$MODE" = "START" ] || fail "端口 8766-8829 均被占用，无法启动服务。"
 
-mkdir -p "$ARCHIVE/_tool"
-nohup "$PY" "$ARCHIVE/_tool/serve.py" --index "$ARCHIVE/index.json" --port "$PORT" \
-  >> "$ARCHIVE/_tool/serve.log" 2>&1 &
-
-for i in $(seq 1 60); do
-  sleep 0.2
-  if /usr/bin/curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/api/meta"; then
-    /usr/bin/open "http://127.0.0.1:$PORT/"
-    exit 0
-  fi
-done
-fail "服务启动超时，请查看 $ARCHIVE/_tool/serve.log"
+mkdir -p "$ARCHIVE/_tool" "$LOG_DIR"
+exec "$PY" -u "$ARCHIVE/_tool/serve.py" \
+  --index "$ARCHIVE/index.json" --port "$PORT" --open-browser \
+  >> "$LOG" 2>&1
 '''
 
 PLIST = """<?xml version="1.0" encoding="UTF-8"?>
@@ -256,6 +266,11 @@ def build_app(app_path, stage):
     png_write(png, 1024, 1024, make_icon(1024))
     icns = build_icns(stage, png)
     shutil.copy2(icns, os.path.join(res, "icon.icns"))
+
+    # 必须重新做临时签名：改过内容的 .app 原签名即失效，未签名会被 Gatekeeper
+    # 判为 "no usable signature" 而拒绝启动（open 静默返回、双击毫无反应）。
+    subprocess.run(["codesign", "--force", "--deep", "--sign", "-", app_path],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return app_path
 
 

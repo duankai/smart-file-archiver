@@ -83,6 +83,7 @@ STATE = {
     "index": None, "allowed": set(), "root": "",
     "index_path": "", "history_path": "", "history_lock": threading.Lock(),
     "stats_cache": {"ts": 0.0, "data": None},
+    "index_mtime": 0.0, "reload_check": 0.0, "reload_lock": threading.Lock(),
 }
 STATS_TTL = 30.0
 HISTORY_MAX = 300
@@ -96,7 +97,36 @@ def load_index(path: str):
     STATE["allowed"] = {item["path"] for item in data.get("items", [])}
     STATE["index_path"] = os.path.abspath(path)
     STATE["history_path"] = os.path.join(os.path.dirname(STATE["index_path"]), "history.json")
+    try:
+        STATE["index_mtime"] = os.path.getmtime(STATE["index_path"])
+    except OSError:
+        STATE["index_mtime"] = 0.0
     return data
+
+
+def maybe_reload():
+    """索引被重写（增量同步、手工改条目）后自动热加载，不必重启服务。
+
+    最多每 2 秒 stat 一次索引文件，开销可忽略；mtime 变了就整份重读。
+    """
+    path = STATE["index_path"]
+    if not path:
+        return
+    now = time.time()
+    if now - STATE["reload_check"] < 2.0:
+        return
+    STATE["reload_check"] = now
+    try:
+        if os.path.getmtime(path) == STATE["index_mtime"]:
+            return
+    except OSError:
+        return
+    with STATE["reload_lock"]:
+        try:
+            load_index(path)
+        except (OSError, ValueError):
+            return  # 正写到一半，下次再试
+        STATE["stats_cache"] = {"ts": 0.0, "data": None}
 
 
 def pick_app(path: str) -> str:
@@ -273,6 +303,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
+        maybe_reload()
 
         if path == "/":
             try:
@@ -370,6 +401,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
+        maybe_reload()
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length) or b"{}")

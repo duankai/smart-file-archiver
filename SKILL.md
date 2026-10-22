@@ -169,6 +169,18 @@ clean_source.py --manifest <归档区>/manifest.json --confirm
 2. `启动文件搜索.command` 双击脚本（依赖终端窗口存活）。
 3. 手动：`python3 _tool/serve.py --index index.json --open-browser`。
 
+### .app 的两个必须知道的细节（踩过坑）
+
+- **服务进程 = 应用进程**：启动器用 `exec` 变身成服务，不是 `nohup` 起子进程再退出。
+  后台子进程会在应用退出时被系统连同进程组一起回收，表现为双击弹「服务启动超时」、
+  之后永远连不上。停服务 = 结束该进程（`pkill -f _tool/serve.py` 或活动监视器）。
+- **改过内容必须重新签名**：`make_app.py` 打包末尾已自动
+  `codesign --force --deep --sign -`。没有有效签名时 Gatekeeper 判 `no usable signature`，
+  `open` 静默返回、双击毫无反应（用 `codesign -dv` / `spctl -a` 可查）。
+- **日志位置**：`~/Library/Logs/FileSearch/serve.log`。不要写归档区 `_tool/serve.log`——
+  该文件由其他应用创建，本应用无权追加。
+- 索引被重写后服务自动热加载（2 秒内 stat 一次 mtime），增量同步完无需重启。
+
 ## 打开文件的 App 探测顺序
 
 ```
@@ -239,7 +251,7 @@ python scripts/rollback.py --manifest <归档区>/manifest.json
 - `examples/taxonomy.json` — 分类词典样例（保险/AI/标准/党建领域），17 个主题类 + 兜底桶，可整体替换为任意领域
 - `assets/index_template.html` — 检索界面模板
 - `scripts/bundle.py` — 把 `serve.py` 与界面模板复制进归档区，生成双击启动脚本；`--install-app` 额外产出 macOS .app
-- `scripts/make_app.py` — 自绘图标（纯 Python 画 PNG → sips/iconutil 转 icns）并组装 .app 包，零第三方依赖
+- `scripts/make_app.py` — 自绘图标（纯 Python 画 PNG → sips/iconutil 转 icns）并组装 .app 包，末尾自动 `codesign -` 临时签名，零第三方依赖
 
 ## 已达成的实测基准
 
