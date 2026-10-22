@@ -169,11 +169,11 @@ clean_source.py --manifest <归档区>/manifest.json --confirm
 2. `启动文件搜索.command` 双击脚本（依赖终端窗口存活）。
 3. 手动：`python3 _tool/serve.py --index index.json --open-browser`。
 
-### .app 的两个必须知道的细节（踩过坑）
+### .app 的三个必须知道的细节（踩过坑）
 
-- **服务进程 = 应用进程**：启动器用 `exec` 变身成服务，不是 `nohup` 起子进程再退出。
-  后台子进程会在应用退出时被系统连同进程组一起回收，表现为双击弹「服务启动超时」、
-  之后永远连不上。停服务 = 结束该进程（`pkill -f _tool/serve.py` 或活动监视器）。
+- **服务用双重 fork + `setsid` 拉成守护进程**：只 `nohup` 起子进程会被系统连进程组一起回收
+  （双击弹「服务启动超时」、之后永远连不上）；让应用进程自己当服务（`exec`）则会导致服务在跑时
+  再双击只「激活」旧实例、页面不打开。守护进程模式两者都避开。停服务 = `pkill -f _tool/serve.py`。
 - **改过内容必须重新签名**：`make_app.py` 打包末尾已自动
   `codesign --force --deep --sign -`。没有有效签名时 Gatekeeper 判 `no usable signature`，
   `open` 静默返回、双击毫无反应（用 `codesign -dv` / `spctl -a` 可查）。

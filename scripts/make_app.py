@@ -213,17 +213,38 @@ if [ "$MODE" = "OPEN" ]; then
   exit 0
 fi
 
-# ---- 单实例：本应用进程自己就是服务进程 ----
-# 早先的写法是 nohup 拉一个子进程再退出，但应用一退出，系统会连子进程所在的进程组一起回收，
-# 表现就是双击后弹「服务启动超时」、之后再也连不上。
-# 现在改成 exec：本进程原地变身为检索服务，应用活着服务就在，不会被连带回收。
-# 再次双击时上面的探测会发现服务已在，直接开浏览器并退出，不会起第二个实例。
+# ---- 拉起服务：双重 fork + setsid 脱离本应用的进程组 ----
+# 1) 不能只 nohup：应用退出时系统会连子进程所在的进程组一起回收 → 双击后「启动超时」。
+# 2) 也不能让应用进程自己当服务（exec）：服务在跑时再双击，LaunchServices 只会「激活」
+#    已存在的实例，不会重新执行启动器，也就不会打开浏览器。
+# 双重 fork + setsid 让服务成为独立会话的守护进程：应用随即退出，下次双击照常走到这里。
 [ "$MODE" = "START" ] || fail "端口 8766-8829 均被占用，无法启动服务。"
 
 mkdir -p "$ARCHIVE/_tool" "$LOG_DIR"
-exec "$PY" -u "$ARCHIVE/_tool/serve.py" \
-  --index "$ARCHIVE/index.json" --port "$PORT" --open-browser \
-  >> "$LOG" 2>&1
+"$PY" - "$PY" "$ARCHIVE/_tool/serve.py" "$ARCHIVE/index.json" "$PORT" "$LOG" <<'PYEOF'
+import os, sys
+py, script, index, port, log = sys.argv[1:6]
+if os.fork() > 0:
+    sys.exit(0)
+os.setsid()
+if os.fork() > 0:
+    sys.exit(0)
+fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+os.dup2(fd, 1)
+os.dup2(fd, 2)
+os.dup2(os.open(os.devnull, os.O_RDONLY), 0)
+os.execv(py, [py, "-u", script, "--index", index, "--port", port, "--open-browser"])
+PYEOF
+
+for i in $(seq 1 100); do
+  sleep 0.2
+  if /usr/bin/curl -s --noproxy '*' -m 1 -o /dev/null "http://127.0.0.1:$PORT/api/meta"; then
+    log "服务已就绪 port=$PORT"
+    /usr/bin/open "http://127.0.0.1:$PORT/"
+    exit 0
+  fi
+done
+fail "服务启动超时，请查看 $LOG"
 '''
 
 PLIST = """<?xml version="1.0" encoding="UTF-8"?>
